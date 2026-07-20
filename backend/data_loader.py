@@ -1,55 +1,48 @@
-"""
-Charge les données BEIR (SciFact ou NFCorpus)
-"""
-
-from beir import util
-from beir.datasets.data_loader import GenericDataLoader
 import os
 import itertools
+import shutil
+import zipfile
+from beir import util
+from beir.datasets.data_loader import GenericDataLoader
 
-def load_dataset(dataset_name="nfcorpus", sample_size=None):
-    """
-    Télécharge et charge un dataset BEIR.
-    
-    Args:
-        dataset_name (str): "nfcorpus" (recommandé pour tests) ou "scifact"
-        sample_size (int): Nombre de documents à charger (None = tout)
-    
-    Returns:
-        corpus (dict): {doc_id: {"title": ..., "text": ...}}
-        queries (dict): {query_id: "question"}
-        qrels (dict): {query_id: {doc_id: relevance_score}}
-    """
-    
-    # Chemin où les données seront stockées
-    data_path = f"data/{dataset_name}"
-    
-    # Télécharger si le dossier n'existe pas
-    if not os.path.exists(data_path):
-        print(f"📥 Téléchargement de {dataset_name}...")
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DATA_DIR = os.path.join(ROOT_DIR, "data")
+
+
+def _ensure_dataset(dataset_name: str) -> str:
+    dataset_path = os.path.join(DATA_DIR, dataset_name)
+    zip_path = os.path.join(DATA_DIR, f"{dataset_name}.zip")
+
+    if os.path.exists(zip_path) and not zipfile.is_zipfile(zip_path):
+        print(f"⚠️ Fichier ZIP corrompu détecté : {zip_path}. Suppression en cours...")
+        os.remove(zip_path)
+
+    if os.path.exists(dataset_path):
+        expected_corpus = os.path.join(dataset_path, "corpus.jsonl")
+        if not os.path.exists(expected_corpus):
+            print(f"⚠️ Le dossier du dataset est incomplet : {dataset_path}. Suppression en cours...")
+            shutil.rmtree(dataset_path, ignore_errors=True)
+
+    if not os.path.exists(dataset_path):
+        print(f"📥 Dataset '{dataset_name}' absent. Téléchargement BEIR en cours...")
         url = f"https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/{dataset_name}.zip"
-        util.download_and_unzip(url, "data")
-        print("✅ Téléchargement terminé.")
-    
-    # Charger les données
-    print(f"📂 Chargement de {dataset_name}...")
+        util.download_and_unzip(url, DATA_DIR)
+        print("✅ Téléchargement BEIR terminé.")
+        if not os.path.exists(dataset_path):
+            raise FileNotFoundError(f"Le dataset {dataset_name} n'a pas pu être chargé après téléchargement.")
+    return dataset_path
+
+
+def load_dataset(dataset_name="scifact", sample_size=None):
+    """Charge un dataset BEIR et retourne (corpus, queries, qrels)."""
+    data_path = _ensure_dataset(dataset_name)
+    print(f"📂 Chargement du dataset BEIR '{dataset_name}' depuis {data_path}")
     corpus, queries, qrels = GenericDataLoader(data_folder=data_path).load(split="test")
-    
-    # Si on veut un échantillon plus petit (pour les tests rapides)
-    if sample_size:
-        print(f"📊 Réduction à {sample_size} documents et 50 requêtes...")
+
+    if sample_size and isinstance(sample_size, int):
+        print(f"📊 Réduction à {sample_size} documents pour accélérer le développement.")
         limited_corpus = dict(itertools.islice(corpus.items(), sample_size))
-        limited_queries = dict(itertools.islice(queries.items(), 50))
+        limited_queries = dict(itertools.islice(queries.items(), min(sample_size, len(queries))))
         return limited_corpus, limited_queries, qrels
-    
-    print(f"✅ Chargé : {len(corpus)} documents, {len(queries)} requêtes")
+
     return corpus, queries, qrels
-
-
-# Test rapide si le fichier est exécuté directement
-if __name__ == "__main__":
-    print("🔍 Test du chargeur de données...")
-    corpus, queries, qrels = load_dataset("nfcorpus", sample_size=500)
-    print(f"✅ Corpus : {len(corpus)} documents")
-    print(f"✅ Requêtes : {len(queries)}")
-    print(f"📝 Exemple de requête : {list(queries.values())[0][:100]}...")
