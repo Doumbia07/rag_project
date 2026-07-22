@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import re
 import logging
@@ -31,6 +32,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 DATASET = "scifact"
+AVAILABLE_DATASETS = ["scifact", "nfcorpus", "arguana", "fiqa"]
 SAMPLE_SIZE = None
 ALPHA = 0.5
 TOP_K_DEFAULT = 10
@@ -49,28 +51,29 @@ print("=" * 50)
 engines = {}
 
 
-def get_engine(name):
-    if name in engines:
-        return engines[name]
+def get_engine(name, dataset_name=None):
+    dataset_name = dataset_name or DATASET
+    cache_key = f"{name}:{dataset_name}"
+    if cache_key in engines:
+        return engines[cache_key]
 
     if name == "bm25":
-        engines[name] = BM25Search(DATASET, sample_size=SAMPLE_SIZE)
+        engines[cache_key] = BM25Search(dataset_name, sample_size=SAMPLE_SIZE)
     elif name == "faiss":
-        engines[name] = FAISSSearch(
+        engines[cache_key] = FAISSSearch(
             model_name="distiluse-base-multilingual-cased-v2",
-            index_path="models/faiss_index.index",
-            metadata_path="models/metadata.pkl",
+            dataset_name=dataset_name,
         )
     elif name == "hybrid":
-        engines[name] = HybridSearch(DATASET, sample_size=SAMPLE_SIZE, alpha=ALPHA)
+        engines[cache_key] = HybridSearch(dataset_name, sample_size=SAMPLE_SIZE, alpha=ALPHA)
     elif name == "rerank":
-        engines[name] = RerankSearch(DATASET, sample_size=SAMPLE_SIZE)
+        engines[cache_key] = RerankSearch(dataset_name, sample_size=SAMPLE_SIZE)
     elif name == "rag":
-        engines[name] = RAGSearch(DATASET, sample_size=SAMPLE_SIZE)
+        engines[cache_key] = RAGSearch(dataset_name, sample_size=SAMPLE_SIZE)
     else:
         raise ValueError(f"Moteur inconnu : {name}")
 
-    return engines[name]
+    return engines[cache_key]
 
 print("✅ API PRÊTE - En attente des requêtes...")
 print("=" * 50)
@@ -122,12 +125,12 @@ def prepare_query(query: str):
     return query, query
 
 
-def process_search(engine_name: str, query: str, top_k: int = TOP_K_DEFAULT):
+def process_search(engine_name: str, query: str, top_k: int = TOP_K_DEFAULT, dataset_name: str = None):
     query_original, query_used = prepare_query(query)
-    logger.info(f"🔍 {engine_name.upper()} - query_original: {query_original}")
+    logger.info(f"🔍 {engine_name.upper()} - dataset: {dataset_name or DATASET} - query_original: {query_original}")
     logger.info(f"🔍 {engine_name.upper()} - query_used: {query_used}")
 
-    engine = get_engine(engine_name)
+    engine = get_engine(engine_name, dataset_name=dataset_name)
     start_time = time.time()
     raw_results = engine.search(query_used, top_k=top_k)
     elapsed_ms = round((time.time() - start_time) * 1000, 2)
@@ -164,7 +167,8 @@ def home():
             "POST /search_rag": "RAG - Génération de réponse",
         },
         "configuration": {
-            "dataset": DATASET,
+            "default_dataset": DATASET,
+            "available_datasets": AVAILABLE_DATASETS,
             "sample_size": SAMPLE_SIZE,
             "alpha": ALPHA,
         },
@@ -188,9 +192,12 @@ def parse_request_json():
 
 def validate_request(data):
     if not data or not isinstance(data, dict) or "query" not in data:
-        return False, "Requête JSON invalide. Utilisez {'query': 'texte', 'top_k': 10}."
+        return False, "Requête JSON invalide. Utilisez {'query': 'texte', 'top_k': 10, 'dataset': 'scifact'}."
     if not isinstance(data["query"], str) or not data["query"].strip():
         return False, "Le champ 'query' doit être une chaîne non vide."
+    dataset_name = data.get("dataset", DATASET)
+    if dataset_name not in AVAILABLE_DATASETS:
+        return False, f"Dataset invalide. Choisissez l'un des datasets suivants : {AVAILABLE_DATASETS}."
     return True, None
 
 
@@ -201,7 +208,8 @@ def search_bm25():
     if not valid:
         return jsonify({"error": error}), 400
     try:
-        return jsonify(process_search("bm25", data["query"].strip(), int(data.get("top_k", TOP_K_DEFAULT))))
+        dataset_name = data.get("dataset", DATASET)
+        return jsonify(process_search("bm25", data["query"].strip(), int(data.get("top_k", TOP_K_DEFAULT)), dataset_name=dataset_name))
     except Exception:
         logger.exception("Erreur BM25")
         return jsonify({"error": "Erreur interne BM25."}), 500
@@ -214,7 +222,8 @@ def search_faiss():
     if not valid:
         return jsonify({"error": error}), 400
     try:
-        return jsonify(process_search("faiss", data["query"].strip(), int(data.get("top_k", TOP_K_DEFAULT))))
+        dataset_name = data.get("dataset", DATASET)
+        return jsonify(process_search("faiss", data["query"].strip(), int(data.get("top_k", TOP_K_DEFAULT)), dataset_name=dataset_name))
     except FileNotFoundError as exc:
         logger.error(exc)
         return jsonify({"error": str(exc)}), 500
@@ -230,7 +239,8 @@ def search_hybrid():
     if not valid:
         return jsonify({"error": error}), 400
     try:
-        return jsonify(process_search("hybrid", data["query"].strip(), int(data.get("top_k", TOP_K_DEFAULT))))
+        dataset_name = data.get("dataset", DATASET)
+        return jsonify(process_search("hybrid", data["query"].strip(), int(data.get("top_k", TOP_K_DEFAULT)), dataset_name=dataset_name))
     except Exception:
         logger.exception("Erreur Hybride")
         return jsonify({"error": "Erreur interne Hybride."}), 500
@@ -243,7 +253,8 @@ def search_rerank():
     if not valid:
         return jsonify({"error": error}), 400
     try:
-        return jsonify(process_search("rerank", data["query"].strip(), int(data.get("top_k", TOP_K_DEFAULT))))
+        dataset_name = data.get("dataset", DATASET)
+        return jsonify(process_search("rerank", data["query"].strip(), int(data.get("top_k", TOP_K_DEFAULT)), dataset_name=dataset_name))
     except Exception:
         logger.exception("Erreur Rerank")
         return jsonify({"error": "Erreur interne Rerank."}), 500
@@ -256,7 +267,8 @@ def search_rag():
     if not valid:
         return jsonify({"error": error}), 400
     try:
-        return jsonify(process_search("rag", data["query"].strip(), int(data.get("top_k", 3))))
+        dataset_name = data.get("dataset", DATASET)
+        return jsonify(process_search("rag", data["query"].strip(), int(data.get("top_k", 3)), dataset_name=dataset_name))
     except Exception:
         logger.exception("Erreur RAG")
         return jsonify({"error": "Erreur interne RAG."}), 500
@@ -273,4 +285,5 @@ def internal_error(error):
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    debug_mode = os.environ.get("FLASK_DEBUG", "0").lower() in {"1", "true", "yes", "on"}
+    app.run(host="0.0.0.0", port=5000, debug=debug_mode, use_reloader=debug_mode)
