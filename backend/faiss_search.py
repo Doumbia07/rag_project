@@ -2,6 +2,7 @@ import os
 import pickle
 import faiss
 import numpy as np
+import hashlib  # 🔥 AJOUTÉ
 from sentence_transformers import SentenceTransformer
 
 
@@ -32,8 +33,6 @@ def resolve_faiss_paths(dataset_name="scifact", base_dir=None):
         if os.path.exists(index_path) and os.path.exists(metadata_path):
             return index_path, metadata_path
 
-    # Fallback to the dataset-specific names even if one of the files is missing,
-    # so the error message points to the expected assets.
     if normalized_name:
         return (
             os.path.join(models_dir, f"{normalized_name}_index.index"),
@@ -51,10 +50,17 @@ class FAISSSearch:
         metadata_path=None,
         dataset_name="scifact",
         base_dir=None,
+        use_cache=True,      # 🔥 NOUVEAU : activer/désactiver le cache
+        cache_size=1000,     # 🔥 NOUVEAU : taille max du cache
     ):
         print("🚀 Initialisation FAISS pré-généré...")
         self.model_name = model_name
         self.dataset_name = dataset_name or "scifact"
+        self.use_cache = use_cache          # 🔥 NOUVEAU
+        self.cache_size = cache_size        # 🔥 NOUVEAU
+        self.cache = {}                     # 🔥 NOUVEAU
+        self.cache_hits = 0                 # 🔥 NOUVEAU
+        self.cache_misses = 0               # 🔥 NOUVEAU
 
         resolved_index_path, resolved_metadata_path = resolve_faiss_paths(
             self.dataset_name,
@@ -91,27 +97,29 @@ class FAISSSearch:
             self.model = None
             raise FAISSLoadError(f"Échec du chargement du modèle d'embeddings FAISS : {exc}") from exc
 
+        # 🔥 INFO : état du cache
+        if self.use_cache:
+            print(f"⚡ Cache activé (taille max : {self.cache_size})")
+        else:
+            print("⚡ Cache désactivé")
+
     def _load_metadata(self, metadata_path):
         with open(metadata_path, "rb") as f:
             metadata = pickle.load(f)
 
         if isinstance(metadata, dict):
-            # Common variant: keys named 'doc_ids', 'doc_titles', 'doc_texts'
             if all(key in metadata for key in ["doc_ids", "doc_titles", "doc_texts"]):
                 return metadata["doc_ids"], metadata["doc_titles"], metadata["doc_texts"]
 
-            # Variant expected by older code: 'doc_ids', 'titles', 'texts'
             if all(key in metadata for key in ["doc_ids", "titles", "texts"]):
                 return metadata["doc_ids"], metadata["titles"], metadata["texts"]
 
-            # If metadata is a mapping of doc_id -> {title,text}
             if all(isinstance(value, dict) for value in metadata.values()):
                 doc_ids = list(metadata.keys())
                 titles = [metadata[doc_id].get("title", "") for doc_id in doc_ids]
                 texts = [metadata[doc_id].get("text", "") for doc_id in doc_ids]
                 return doc_ids, titles, texts
 
-            # If metadata contains a 'corpus' dict
             if "corpus" in metadata and isinstance(metadata["corpus"], dict):
                 corpus = metadata["corpus"]
                 doc_ids = list(corpus.keys())
@@ -129,13 +137,75 @@ class FAISSSearch:
             "Impossible de charger les métadonnées FAISS. Le fichier metadata.pkl doit contenir doc_ids, titles et texts."
         )
 
+    # ============================================================
+    # 🔥 NOUVEAUTES : Cache des embeddings
+    # ============================================================
+
+    def _get_cache_key(self, query: str) -> str:
+        """Génère une clé de cache unique pour la requête."""
+        normalized = query.lower().strip()
+        return hashlib.md5(normalized.encode('utf-8')).hexdigest()
+
+    def _get_embedding(self, query: str):
+        """
+        Retourne l'embedding de la requête (avec cache si activé).
+        """
+        if not self.use_cache:
+            return self.model.encode([query], convert_to_numpy=True)
+
+        cache_key = self._get_cache_key(query)
+
+        if cache_key in self.cache:
+            self.cache_hits += 1
+            return self.cache[cache_key]
+
+        # Cache miss
+        self.cache_misses += 1
+        embedding = self.model.encode([query], convert_to_numpy=True)
+
+        # Ajouter au cache
+        self.cache[cache_key] = embedding
+
+        # Gérer la taille du cache (FIFO)
+        if len(self.cache) > self.cache_size:
+            oldest_key = next(iter(self.cache))
+            del self.cache[oldest_key]
+
+        return embedding
+
+    def get_cache_stats(self) -> dict:
+        """Retourne les statistiques du cache."""
+        total = self.cache_hits + self.cache_misses
+        hit_rate = self.cache_hits / total if total > 0 else 0.0
+        return {
+            "cache_size": len(self.cache),
+            "max_cache_size": self.cache_size,
+            "cache_hits": self.cache_hits,
+            "cache_misses": self.cache_misses,
+            "hit_rate": hit_rate,
+            "cache_enabled": self.use_cache,
+        }
+
+    def clear_cache(self):
+        """Vide le cache des embeddings."""
+        self.cache = {}
+        self.cache_hits = 0
+        self.cache_misses = 0
+        print("🗑️ Cache FAISS vidé avec succès.")
+
+    # ============================================================
+    # Méthode search modifiée pour utiliser le cache
+    # ============================================================
+
     def search(self, query, top_k=10):
         if not query or not isinstance(query, str):
             return []
         if self.model is None:
             raise FAISSLoadError("Le modèle d'embeddings FAISS n'a pas pu être chargé.")
 
-        query_embedding = self.model.encode([query], convert_to_numpy=True)
+        # 🔥 UTILISATION DU CACHE
+        query_embedding = self._get_embedding(query)
+
         faiss.normalize_L2(query_embedding)
         distances, indices = self.index.search(query_embedding.astype(np.float32), top_k)
 

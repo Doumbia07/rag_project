@@ -1,3 +1,5 @@
+
+
 rag_project/                          # Racine de ton projet
 │
 ├── backend/                          # ⚙️ Cœur du projet (API + moteurs)

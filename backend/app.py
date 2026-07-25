@@ -6,10 +6,7 @@ import logging
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-# Compatibility shim: some transformers/sentence-transformers versions
-# expect `is_offline_mode` to be exported from huggingface_hub. If it's
-# missing in the installed package, inject a simple fallback to avoid
-# import-time errors when importing `sentence_transformers`.
+# Compatibility shim
 try:
     import huggingface_hub
     if not hasattr(huggingface_hub, "is_offline_mode"):
@@ -18,7 +15,6 @@ try:
 
         setattr(huggingface_hub, "is_offline_mode", _hf_is_offline_mode)
 except Exception:
-    # If huggingface_hub isn't installed yet, let later imports raise a clear error
     pass
 
 from backend.bm25 import BM25Search
@@ -31,11 +27,17 @@ from deep_translator import GoogleTranslator
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ============================================================
+# 🔥 PARAMÈTRES CONFIGURABLES (ajout du cache)
+# ============================================================
+
 DATASET = "scifact"
 AVAILABLE_DATASETS = ["scifact", "nfcorpus", "arguana", "fiqa"]
 SAMPLE_SIZE = None
 ALPHA = 0.5
 TOP_K_DEFAULT = 10
+USE_CACHE = True          # 🔥 NOUVEAU : activer/désactiver le cache
+CACHE_SIZE = 1000         # 🔥 NOUVEAU : taille max du cache
 
 app = Flask(__name__)
 CORS(app)
@@ -46,6 +48,7 @@ print("=" * 50)
 print(f"📚 Dataset : {DATASET}")
 print(f"📄 Sample size : {SAMPLE_SIZE if SAMPLE_SIZE else 'Tout le corpus'}")
 print(f"⚖️ Alpha hybride : {ALPHA}")
+print(f"⚡ Cache : {'Activé' if USE_CACHE else 'Désactivé'} (taille max : {CACHE_SIZE})")  # 🔥 NOUVEAU
 print("=" * 50)
 
 engines = {}
@@ -63,6 +66,8 @@ def get_engine(name, dataset_name=None):
         engines[cache_key] = FAISSSearch(
             model_name="distiluse-base-multilingual-cased-v2",
             dataset_name=dataset_name,
+            use_cache=USE_CACHE,      # 🔥 NOUVEAU
+            cache_size=CACHE_SIZE,    # 🔥 NOUVEAU
         )
     elif name == "hybrid":
         engines[cache_key] = HybridSearch(dataset_name, sample_size=SAMPLE_SIZE, alpha=ALPHA)
@@ -77,6 +82,42 @@ def get_engine(name, dataset_name=None):
 
 print("✅ API PRÊTE - En attente des requêtes...")
 print("=" * 50)
+
+# ============================================================
+# 🔥 NOUVEAUX ENDPOINTS POUR LE CACHE
+# ============================================================
+
+@app.route("/cache/stats", methods=["GET"])
+def cache_stats():
+    """Retourne les statistiques du cache FAISS."""
+    for engine in engines.values():
+        if isinstance(engine, FAISSSearch):
+            stats = engine.get_cache_stats()
+            return jsonify({
+                "status": "success",
+                "cache": stats,
+            })
+    return jsonify({
+        "status": "warning",
+        "message": "Aucun moteur FAISS initialisé",
+        "cache": None,
+    })
+
+@app.route("/cache/clear", methods=["POST"])
+def cache_clear():
+    """Vide le cache FAISS."""
+    cleared = False
+    for engine in engines.values():
+        if isinstance(engine, FAISSSearch):
+            engine.clear_cache()
+            cleared = True
+    if cleared:
+        return jsonify({"status": "success", "message": "Cache vidé avec succès"})
+    return jsonify({"status": "warning", "message": "Aucun moteur FAISS initialisé"})
+
+# ============================================================
+# FIN DES NOUVEAUX ENDPOINTS
+# ============================================================
 
 try:
     translator = GoogleTranslator(source="auto", target="en")
@@ -171,6 +212,10 @@ def home():
             "available_datasets": AVAILABLE_DATASETS,
             "sample_size": SAMPLE_SIZE,
             "alpha": ALPHA,
+            "cache": {
+                "enabled": USE_CACHE,
+                "max_size": CACHE_SIZE,
+            },
         },
         "status": "ready",
         "translation_mode": "deep-translator" if USE_DEEP_TRANSLATOR else "fallback dictionnaire",
