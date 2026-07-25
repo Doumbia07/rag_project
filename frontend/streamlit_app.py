@@ -595,7 +595,7 @@ with st.container():
 
     col_btn_left, col_btn_center, col_btn_right = st.columns([2, 2, 2])
     with col_btn_center:
-        search_btn = st.button("🔍 Rechercher", type="primary", use_container_width=True)
+        search_btn = st.button(" Rechercher", type="primary", use_container_width=True)
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -685,9 +685,9 @@ if search_btn:
             except requests.exceptions.RequestException as e:
                 st.error(f" Impossible de joindre l'API : {e}")
 
-# ============================================================
+
 # PIED DE PAGE
-# ============================================================
+
 st.markdown("""
 <div class="footer">
      <strong>DocuMind</strong> · Moteur de recherche multi-domaines<br>
